@@ -1,3 +1,5 @@
+version: "3.7"
+
 services:
   postgres:
     image: postgres:13
@@ -5,35 +7,69 @@ services:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
+    ports:
+      - "5432:5432"
     networks:
-      - my_network
-    deploy:
-      resources:
-        limits:
-          memory: 1G
+      - podcast_net
 
   airflow:
-    image: apache/airflow:2.2.0
+    build: ./airflow
+    image: custom-airflow:latest
+    restart: always
     depends_on:
       - postgres
     environment:
+      # Use LocalExecutor and point to Postgres
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./scripts:/opt/airflow/scripts
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
     ports:
       - "8080:8080"
-    command: >
-      bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com && (airflow webserver & airflow scheduler)"
+    volumes:
+      - ./data:/data
+      - ./airflow/dags:/opt/airflow/dags
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["standalone"]
     networks:
-      - my_network
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+      - podcast_net
+
+  spark-master:
+    image: bitnami/spark:3.3.0
+    environment:
+      - SPARK_MODE=master
+      - ALLOW_EMPTY_PASSWORD=yes
+    ports:
+      - "7077:7077"
+      - "8081:8081"
+    networks:
+      - podcast_net
+
+  spark-worker:
+    image: bitnami/spark:3.3.0
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - ALLOW_EMPTY_PASSWORD=yes
+    depends_on:
+      - spark-master
+    networks:
+      - podcast_net
+
+  spark-app:
+    build: ./spark-app
+    image: spark-app:latest
+    depends_on:
+      - spark-master
+      - spark-worker
+    environment:
+      SPARK_MASTER: spark://spark-master:7077
+    volumes:
+      - ./data:/data
+    networks:
+      - podcast_net
 
 networks:
-  my_network:
-    external: true
+  podcast_net:
+    name: podcast_net    # ← force Docker to actually call it "podcast_net"
+    driver: bridge
